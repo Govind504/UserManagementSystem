@@ -35,8 +35,8 @@ login() {
     fi
 
     password=$(dialog --stdout --insecure --passwordbox "Enter Password:" 10 40)
-
     stored_hash=$(grep "^$username:" "$CREDENTIALS_FILE" | cut -d: -f2)
+
     if [[ -z "$stored_hash" ]]; then
         dialog --msgbox "User does not exist!" 10 40
         return 1
@@ -52,7 +52,7 @@ login() {
             user_menu "$username"
         fi
     else
-        if [[ "$username" != "admin" ]]; then  # Only track failed attempts for non-admin users
+        if [[ "$username" != "admin" ]]; then
             attempts=$(grep "^$username:" "$LOGIN_ATTEMPTS" | cut -d: -f2)
             attempts=$((attempts + 1))
             sed -i "/^$username:/d" "$LOGIN_ATTEMPTS"
@@ -60,11 +60,9 @@ login() {
             dialog --msgbox "Incorrect password! Attempt $attempts of 3" 10 40
 
             if [[ "$attempts" -ge 3 ]]; then
-                if [[ "$username" != "admin" ]]; then
-                    block_user "$username"
-                    log_intrusion "$username"
-                    dialog --msgbox "Too many failed attempts. User blocked!" 10 40
-                fi
+                block_user "$username"
+                log_intrusion "$username"
+                dialog --msgbox "Too many failed attempts. User blocked!" 10 40
             fi
         else
             dialog --msgbox "Incorrect password for admin. Admin attempts are not tracked." 10 40
@@ -83,6 +81,9 @@ signup() {
     password=$(dialog --stdout --insecure --passwordbox "Choose Password:" 10 40)
     hash=$(echo "$password" | sha256sum | cut -d' ' -f1)
     echo "$username:$hash" >> "$CREDENTIALS_FILE"
+
+    # Create a dummy system user (optional)
+    useradd -M -s /usr/sbin/nologin "$username" 2>/dev/null
 
     dialog --msgbox "Signup successful. Please login." 10 40
 }
@@ -127,17 +128,25 @@ user_menu() {
     done
 }
 
-# Add System User
+# Add System User + Credential Entry
 add_user() {
     newuser=$(dialog --stdout --inputbox "Enter new system username:" 10 40)
-    if id "$newuser" &>/dev/null; then
+    if id "$newuser" &>/dev/null || grep -q "^$newuser:" "$CREDENTIALS_FILE"; then
         dialog --msgbox "User already exists." 10 40
         return
     fi
+
     password=$(dialog --stdout --insecure --passwordbox "Enter password:" 10 40)
+
+    # Create system user
     useradd -m "$newuser"
     echo "$newuser:$password" | chpasswd
-    dialog --msgbox "System user '$newuser' added." 10 40
+
+    # Also add to credentials
+    hash=$(echo "$password" | sha256sum | cut -d' ' -f1)
+    echo "$newuser:$hash" >> "$CREDENTIALS_FILE"
+
+    dialog --msgbox "System user '$newuser' added and registered for login." 10 40
 }
 
 # Delete System User
@@ -148,7 +157,13 @@ delete_user() {
         return
     fi
     dialog --yesno "Are you sure to delete $user?" 10 40
-    [[ $? -eq 0 ]] && userdel -r "$user" && dialog --msgbox "User deleted." 10 40
+    if [[ $? -eq 0 ]]; then
+        userdel -r "$user"
+        sed -i "/^$user:/d" "$CREDENTIALS_FILE"
+        sed -i "/^$user$/d" "$BLOCKEDusers_FILE"
+        sed -i "/^$user:/d" "$LOGIN_ATTEMPTS"
+        dialog --msgbox "User deleted." 10 40
+    fi
 }
 
 # Assign Group
@@ -172,7 +187,11 @@ list_users() {
 
 # View Blocked Users
 view_blocked_users() {
-    dialog --textbox "$BLOCKEDusers_FILE" 20 50
+    if [[ -s "$BLOCKEDusers_FILE" ]]; then
+        dialog --textbox "$BLOCKEDusers_FILE" 20 50
+    else
+        dialog --msgbox "No blocked users." 10 40
+    fi
 }
 
 # Unblock User
@@ -189,7 +208,11 @@ unblock_user() {
 
 # View Intrusions
 view_intrusions() {
-    dialog --textbox "$INTRUSION_LOG" 20 70
+    if [[ -s "$INTRUSION_LOG" ]]; then
+        dialog --textbox "$INTRUSION_LOG" 20 70
+    else
+        dialog --msgbox "No intrusion logs found." 10 40
+    fi
 }
 
 # Change Password
@@ -198,6 +221,7 @@ change_password() {
     newhash=$(echo "$newpass" | sha256sum | cut -d' ' -f1)
     sed -i "/^$1:/d" "$CREDENTIALS_FILE"
     echo "$1:$newhash" >> "$CREDENTIALS_FILE"
+    echo "$1:$newpass" | chpasswd 2>/dev/null
     dialog --msgbox "Password updated successfully." 10 40
 }
 
